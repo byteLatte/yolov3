@@ -49,12 +49,14 @@ class Detect(nn.Module):
     export = False  # export mode
 
     def __init__(self, nc=80, anchors=(), ch=(), inplace=True):  # detection layer
+        # anchor shape: go check related yaml
+        # ch:[ch[f0],ch[f1],ch[2]]] e.g. ch=[128,512,32] depend the detection layer number
         """Initializes YOLOv3 detection layer with class count, anchors, channels, and operation modes."""
         super().__init__()
         self.nc = nc  # number of classes
         self.no = nc + 5  # number of outputs per anchor
         self.nl = len(anchors)  # number of detection layers
-        self.na = len(anchors[0]) // 2  # number of anchors
+        self.na = len(anchors[0]) // 2  # number of anchors(per detection layer)
         self.grid = [torch.empty(0) for _ in range(self.nl)]  # init grid
         self.anchor_grid = [torch.empty(0) for _ in range(self.nl)]  # init anchor grid
         self.register_buffer("anchors", torch.tensor(anchors).float().view(self.nl, -1, 2))  # shape(nl,na,2)
@@ -65,10 +67,10 @@ class Detect(nn.Module):
         """
         Processes input through convolutional layers, reshaping output for detection.
 
-        Expects x as list of tensors with shape(bs, C, H, W).
+        Expects x as list of tensors with shape(bs, C, H, W). #bs==batch_size
         """
         z = []  # inference output
-        for i in range(self.nl):
+        for i in range(self.nl): # per detection layers
             x[i] = self.m[i](x[i])  # conv
             bs, _, ny, nx = x[i].shape  # x(bs,255,20,20) to x(bs,3,20,20,85)
             x[i] = x[i].view(bs, self.na, self.no, ny, nx).permute(0, 1, 3, 4, 2).contiguous()
@@ -147,6 +149,9 @@ class BaseModel(nn.Module):
             if profile:
                 self._profile_one_layer(m, x, dt)
             x = m(x)  # run
+
+            # save==list ::contains some index of model layers which were needed by the several later layer
+            # y   ==list ::contains some outputs of layers which were needed by the several later layer
             y.append(x if m.i in self.save else None)  # save output
             if visualize:
                 feature_visualization(x, m.type, m.i, save_dir=visualize)
@@ -394,7 +399,7 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
             c2 = sum(ch[x] for x in f)
         # TODO: channel, gw, gd
         elif m in {Detect, Segment}:
-            args.append([ch[x] for x in f])
+            args.append([ch[x] for x in f]) # Detect:args==[nc,anchor,[ch[f0],ch[f1],ch[2]]]
             if isinstance(args[1], int):  # number of anchors
                 args[1] = [list(range(args[1] * 2))] * len(f)
             if m is Segment:
@@ -406,11 +411,14 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
         else:
             c2 = ch[f]
 
+        # Detect:args==[nc,anchor,[ch[f0],ch[f1],ch[2]]]
         m_ = nn.Sequential(*(m(*args) for _ in range(n))) if n > 1 else m(*args)  # module
         t = str(m)[8:-2].replace("__main__.", "")  # module type
         np = sum(x.numel() for x in m_.parameters())  # number params
         m_.i, m_.f, m_.type, m_.np = i, f, t, np  # attach index, 'from' index, type, number params
         LOGGER.info(f"{i:>3}{str(f):>18}{n_:>3}{np:10.0f}  {t:<40}{str(args):<30}")  # print
+
+        #Detect: save.extend(f)
         save.extend(x % i for x in ([f] if isinstance(f, int) else f) if x != -1)  # append to savelist
         layers.append(m_)
         if i == 0:
